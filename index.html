@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bouncy Ball</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="game">
+  <canvas id="game" width="960" height="540" tabindex="0"></canvas>
+  <div id="overlay" class="overlay">
+    <div class="panel">
+      <h1 id="panel-title">Bouncy Ball</h1>
+      <p id="panel-text">Bounce to the flag at the far end of the course. Fall in a pit and it's over.</p>
+      <ul id="panel-help">
+        <li>The ball bounces on its own. Steer it with <kbd>←</kbd> <kbd>→</kbd>.</li>
+        <li>Hold <kbd>↑</kbd> as you land for a big bounce.</li>
+        <li>Hold <kbd>↓</kbd> to drop faster and land with a small hop.</li>
+        <li>Slopes kick the ball the way they lean.</li>
+      </ul>
+      <button id="panel-button" type="button">Start</button>
+      <p class="keys"><kbd>Space</kbd> starts, <kbd>R</kbd> restarts, <kbd>M</kbd> mutes</p>
+    </div>
+  </div>
+</div>
+<script src="game.js"></script>
+</body>
+</html>
