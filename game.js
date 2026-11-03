@@ -23,13 +23,20 @@
 
   // ---------- Course ----------
   // The surface is one line from left to right. Heights are in canvas pixels, so smaller is higher.
+  // Inside the cave a second line, the roof, follows the ground at a height of `gap` above it.
   const PIT_FLOOR = H + 400;   // pit walls run down to here, out of reach of the ball
+  const SKY = -600;            // rock walls run up to here
   const surface = [];          // {x, y}
+  const roof = [];             // {x, y}
   const pits = [];             // {left, right, top}
   let cx = 0;
   let cy = 410;
+  let gap = null;              // roof height above the ground, or null outside the cave
 
-  function point() { surface.push({ x: cx, y: cy }); }
+  function point() {
+    surface.push({ x: cx, y: cy });
+    if (gap !== null && cy !== PIT_FLOOR) roof.push({ x: cx, y: cy - gap });
+  }
   function flat(len) { cx += len; point(); }
   function ledge(rise) { cy -= rise; point(); }
   function curve(len, shape) {
@@ -53,8 +60,29 @@
     cy = leftY - rise; point();
     pits.push({ left, right: cx, top: Math.max(leftY, cy) });
   }
+  // Flat ground while the roof eases to a new height
+  function roofTo(len, newGap) {
+    const startX = cx;
+    const startGap = gap;
+    const pieces = Math.max(4, Math.round(len / 24));
+    for (let i = 1; i <= pieces; i++) {
+      const t = i / pieces;
+      cx = startX + len * t;
+      gap = startGap + (newGap - startGap) * (1 - Math.cos(Math.PI * t)) / 2;
+      point();
+    }
+  }
+  function enterCave(height) {
+    roof.push({ x: cx, y: SKY });
+    gap = height;
+    roof.push({ x: cx, y: cy - gap });
+  }
+  function leaveCave() {
+    roof.push({ x: cx, y: SKY });
+    gap = null;
+  }
 
-  cy = -600; point();          // wall behind the start
+  cy = SKY; point();           // wall behind the start
   cy = 410; point();
 
   // Warm up
@@ -111,18 +139,71 @@
   flat(200);
   pit(155, -40);
 
-  // Home stretch
+  // Up to the checkpoint flag
   flat(480);
+  const CHECKPOINT = cx;
+  flat(420);
+
+  // The cave. A roof below 190 stops a big bounce; below 172 it stops a normal one too.
+  const CAVE_START = cx;
+  enterCave(250);
+  flat(320);
+  pit(110);
+  flat(260);
+  roofTo(160, 185);
+  flat(160);
+  pit(125);
+  flat(220);
+  roofTo(140, 140);
+  flat(200);
+  pit(110);
+  flat(240);
+  roofTo(140, 230);
+  slope(320, -50);
+  flat(120);
+  pit(130);
+  flat(200);
+  roofTo(70, 125);
+  roofTo(70, 230);
+  flat(120);
+  pit(120);
+  flat(160);
+  roofTo(70, 125);
+  roofTo(70, 230);
+  flat(200);
+  pit(135, 30);
+  flat(220);
+  roofTo(140, 150);
+  flat(160);
+  pit(115);
+  flat(200);
+  pit(115);
+  flat(260);
+  roofTo(160, 260);
+  flat(220);
+  leaveCave();
+  const CAVE_END = cx;
+
+  // Out into daylight
+  flat(360);
   const FINISH = cx;
   flat(W);
   const WORLD_END = cx;
-  cy = -600; point();          // wall past the finish
+  cy = SKY; point();           // wall past the finish
 
   // Line segments for collision. Walls are the vertical ones.
-  const segments = surface.slice(1).map((b, i) => {
-    const a = surface[i];
-    return { x1: a.x, y1: a.y, x2: b.x, y2: b.y, wall: a.x === b.x };
-  });
+  function toSegments(line) {
+    return line.slice(1).map((b, i) => {
+      const a = line[i];
+      return { x1: a.x, y1: a.y, x2: b.x, y2: b.y, wall: a.x === b.x };
+    });
+  }
+  const segments = [...toSegments(surface), ...toSegments(roof)];
+  const groundSegments = toSegments(surface);
+
+  function groundAt(x) {
+    return surface.find(p => p.x >= x).y;
+  }
 
   // ---------- Input ----------
   const KEY_NAMES = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
@@ -132,8 +213,8 @@
     if (KEY_NAMES[e.key]) keys[KEY_NAMES[e.key]] = true;
     if (KEY_NAMES[e.key] || e.key === ' ') e.preventDefault();
     if (e.repeat) return;
-    if ((e.key === ' ' || e.key === 'Enter') && mode !== 'playing') startRun();
-    if (e.key === 'r' || e.key === 'R') startRun();
+    if ((e.key === ' ' || e.key === 'Enter') && mode !== 'playing') panelAction();
+    if (e.key === 'r' || e.key === 'R') newRun();
     if (e.key === 'm' || e.key === 'M') muted = !muted;
   });
   window.addEventListener('keyup', e => {
@@ -159,25 +240,42 @@
     overlay.hidden = false;
   }
 
-  panelButton.addEventListener('click', startRun);
+  // The panel's button continues after a lost ball, and starts a new run otherwise.
+  function panelAction() {
+    if (mode === 'lost') continueRun();
+    else newRun();
+  }
+
+  panelButton.addEventListener('click', panelAction);
 
   // ---------- Game state ----------
-  let mode = 'title';          // 'title', 'playing', 'lost' or 'won'
+  const LIVES = 3;
+  let mode = 'title';          // 'title', 'playing', 'lost' (a ball, with more left), 'over' (all balls) or 'won'
   let clock = 0;               // seconds in this run
+  let lives = LIVES;           // balls left, counting the one in play
+  let checkpoint = false;      // whether this run has reached the checkpoint flag
   let cameraX = 0;
   const ball = { x: 0, y: 0, vx: 0, vy: 0, angle: 0, spin: 0, squash: 0, normalX: 0, normalY: -1 };
   const bits = [];             // dust and confetti: {x, y, vx, vy, life, age, size, color, gravity}
 
+  // Drops a fresh ball at the start, or just past the checkpoint once it's been reached.
   function placeBall() {
-    Object.assign(ball, { x: 140, y: 300, vx: 0, vy: 0, angle: 0, spin: 0, squash: 0 });
-    cameraX = 0;
+    const x = checkpoint ? CHECKPOINT + 60 : 140;
+    Object.assign(ball, { x, y: groundAt(x) - 110, vx: 0, vy: 0, angle: 0, spin: 0, squash: 0 });
+    cameraX = cameraTarget();
     bits.length = 0;
   }
 
-  function startRun() {
+  function newRun() {
+    lives = LIVES;
+    checkpoint = false;
+    clock = 0;
+    continueRun();
+  }
+
+  function continueRun() {
     startAudio();
     placeBall();
-    clock = 0;
     mode = 'playing';
     overlay.hidden = true;
     canvas.focus();
@@ -187,17 +285,32 @@
     return Math.max(0, Math.min(1, ball.x / FINISH));
   }
 
-  function loseRun() {
-    mode = 'lost';
+  function reachCheckpoint() {
+    checkpoint = true;
+    [523, 784].forEach((f, i) => tone(f, f, 0.14, 0.08, 'triangle', i * 0.1));
+    addConfetti(30);
+  }
+
+  function loseBall() {
+    lives--;
     tone(420, 70, 0.6, 0.12, 'triangle');
-    showPanel('Down the pit!', `You got ${Math.round(progress() * 100)}% of the way.`, 'Try Again');
+    const title = ball.x > CAVE_START ? 'Lost in the cave!' : 'Down the pit!';
+    if (lives === 0) {
+      mode = 'over';
+      showPanel(title, `That was your last ball, ${Math.round(progress() * 100)}% of the way. Back to the very beginning.`, 'Play Again');
+      return;
+    }
+    mode = 'lost';
+    const left = lives === 1 ? '1 ball left' : `${lives} balls left`;
+    showPanel(title, `${left}. Back to ${checkpoint ? 'the flag' : 'the start'}.`, 'Continue');
   }
 
   function winRun() {
     mode = 'won';
     [523, 659, 784, 1047].forEach((f, i) => tone(f, f, 0.18, 0.1, 'triangle', i * 0.11));
-    addConfetti();
-    showPanel('You made it!', `Finished in ${clock.toFixed(1)} seconds.`, 'Play Again');
+    addConfetti(120);
+    const spare = lives === LIVES ? 'without losing a ball' : `with ${lives === 1 ? '1 ball' : `${lives} balls`} to spare`;
+    showPanel('You made it!', `Finished in ${clock.toFixed(1)} seconds, ${spare}.`, 'Play Again');
   }
 
   // ---------- Physics ----------
@@ -209,29 +322,45 @@
     ball.x += ball.vx * STEP;
     ball.y += ball.vy * STEP;
     ball.angle += ball.spin * STEP;
-    for (const seg of segments) collide(seg);
+    collide();
     if (mode === 'playing') {
       clock += STEP;
-      if (ball.y > FALL_LINE) loseRun();
+      if (ball.y > FALL_LINE) loseBall();
       else if (ball.x >= FINISH) winRun();
+      else if (!checkpoint && ball.x >= CHECKPOINT) reachCheckpoint();
     }
   }
 
-  function collide(seg) {
-    if (seg.x2 < ball.x - RADIUS || seg.x1 > ball.x + RADIUS) return;
-    // Closest point on the segment to the ball's center
+  // Handles the deepest contact first, then checks again. Taking contacts in list order
+  // would let the end of one segment knock the ball sideways when it lands just past
+  // the point where two segments meet.
+  function collide() {
+    for (let pass = 0; pass < 3; pass++) {
+      let deepest = null;
+      for (const seg of segments) {
+        const hit = contact(seg);
+        if (hit && (!deepest || hit.dist < deepest.dist)) deepest = hit;
+      }
+      if (!deepest) return;
+      const nx = deepest.dx / deepest.dist;
+      const ny = deepest.dy / deepest.dist;
+      ball.x += nx * (RADIUS - deepest.dist);
+      ball.y += ny * (RADIUS - deepest.dist);
+      bounce(nx, ny);
+    }
+  }
+
+  // Offset from the closest point on the segment to the ball's center, if they overlap
+  function contact(seg) {
+    if (seg.x2 < ball.x - RADIUS || seg.x1 > ball.x + RADIUS) return null;
     const sx = seg.x2 - seg.x1;
     const sy = seg.y2 - seg.y1;
     const t = Math.max(0, Math.min(1, ((ball.x - seg.x1) * sx + (ball.y - seg.y1) * sy) / (sx * sx + sy * sy)));
     const dx = ball.x - (seg.x1 + sx * t);
     const dy = ball.y - (seg.y1 + sy * t);
     const dist = Math.hypot(dx, dy);
-    if (dist >= RADIUS || dist === 0) return;
-    const nx = dx / dist;
-    const ny = dy / dist;
-    ball.x += nx * (RADIUS - dist);
-    ball.y += ny * (RADIUS - dist);
-    bounce(nx, ny);
+    if (dist >= RADIUS || dist === 0) return null;
+    return { dx, dy, dist };
   }
 
   // Swaps the ball's speed into the surface for speed away from it. The minimum bounce
@@ -254,9 +383,12 @@
     tone(150 + out * 0.3, 90 + out * 0.15, 0.14, 0.05 * Math.min(1, into / 700));
   }
 
+  function cameraTarget() {
+    return Math.max(0, Math.min(WORLD_END - W, ball.x - W * 0.36 + ball.vx * 0.25));
+  }
+
   function updateCamera(dt) {
-    const target = Math.max(0, Math.min(WORLD_END - W, ball.x - W * 0.36 + ball.vx * 0.25));
-    cameraX += (target - cameraX) * Math.min(1, 6 * dt);
+    cameraX += (cameraTarget() - cameraX) * Math.min(1, 6 * dt);
   }
 
   // ---------- Effects ----------
@@ -279,9 +411,9 @@
     }
   }
 
-  function addConfetti() {
+  function addConfetti(count) {
     const colors = ['#ff7a66', '#ffd966', '#7fc0ff', '#8dffb0', '#dba6ff'];
-    for (let i = 0; i < 120; i++) {
+    for (let i = 0; i < count; i++) {
       addBit({
         x: ball.x + (Math.random() - 0.5) * 60,
         y: ball.y - 40,
@@ -340,11 +472,17 @@
   groundPath.lineTo(WORLD_END, H + 500);
   groundPath.lineTo(0, H + 500);
   groundPath.closePath();
-  segments.forEach(seg => {
+  groundSegments.forEach(seg => {
     if (seg.wall) return;
     grassPath.moveTo(seg.x1, seg.y1);
     grassPath.lineTo(seg.x2, seg.y2);
   });
+  const rockPath = new Path2D();  // the roof and the rock above it; starts and ends at SKY, so it closes cleanly
+  roof.forEach((p, i) => {
+    if (i === 0) rockPath.moveTo(p.x, p.y);
+    else rockPath.lineTo(p.x, p.y);
+  });
+  rockPath.closePath();
 
   function drawSky() {
     const sky = ctx.createLinearGradient(0, 0, 0, H);
@@ -420,16 +558,38 @@
     ctx.stroke(grassPath);
   }
 
-  function drawFlag(time) {
-    const x = FINISH;
-    const top = surface.find(p => p.x >= x).y - 130;
+  // The space inside the cave, behind everything
+  function drawCaveBack() {
+    if (CAVE_END < cameraX || CAVE_START > cameraX + W) return;
+    ctx.fillStyle = '#2c2433';
+    ctx.fillRect(CAVE_START, 0, CAVE_END - CAVE_START, H);
+  }
+
+  // Dims the cave floor, then draws the rock overhead
+  function drawCaveRock() {
+    if (CAVE_END < cameraX || CAVE_START > cameraX + W) return;
+    ctx.fillStyle = 'rgba(12, 8, 18, .45)';
+    ctx.fillRect(CAVE_START, 0, CAVE_END - CAVE_START, H);
+    const rock = ctx.createLinearGradient(0, 0, 0, 300);
+    rock.addColorStop(0, '#3d3540');
+    rock.addColorStop(1, '#5b4f5a');
+    ctx.fillStyle = rock;
+    ctx.fill(rockPath);
+    ctx.strokeStyle = '#776a72';
+    ctx.lineWidth = 4;
+    ctx.stroke(rockPath);
+  }
+
+  function drawFlag(x, color, time) {
+    if (x + 80 < cameraX || x > cameraX + W) return;
+    const top = groundAt(x) - 130;
     ctx.fillStyle = '#e8e8e8';
     ctx.fillRect(x - 3, top, 6, 130);
     ctx.fillStyle = '#ffd966';
     ctx.beginPath();
     ctx.arc(x, top, 6, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = '#e8503a';
+    ctx.fillStyle = color;
     ctx.beginPath();
     ctx.moveTo(x + 3, top + 6);
     for (let i = 0; i <= 8; i++)
@@ -494,22 +654,34 @@
     ctx.globalAlpha = 1;
   }
 
-  // Progress bar across the top, with a notch for each pit
+  // Progress bar across the top, with a notch for each pit, a band for the cave and a
+  // tick for the checkpoint. Balls left sit underneath.
   function drawHud() {
     const left = 40;
     const width = W - 80;
     const y = 20;
+    const at = x => left + width * x / FINISH;
     ctx.fillStyle = 'rgba(20, 22, 28, .55)';
     ctx.fillRect(left, y, width, 8);
     ctx.fillStyle = '#ffd966';
     ctx.fillRect(left, y, width * progress(), 8);
+    ctx.fillStyle = 'rgba(60, 50, 70, .8)';
+    ctx.fillRect(at(CAVE_START), y - 3, at(CAVE_END) - at(CAVE_START), 3);
     ctx.fillStyle = '#14161c';
     for (const pit of pits)
-      ctx.fillRect(left + width * pit.left / FINISH, y, Math.max(3, width * (pit.right - pit.left) / FINISH), 8);
+      ctx.fillRect(at(pit.left), y, Math.max(3, at(pit.right) - at(pit.left)), 8);
+    ctx.fillStyle = checkpoint ? '#6cc44f' : '#e8e8e8';
+    ctx.fillRect(at(CHECKPOINT) - 2, y - 6, 4, 20);
     ctx.fillStyle = '#e8503a';
     ctx.beginPath();
     ctx.arc(left + width * progress(), y + 4, 8, 0, Math.PI * 2);
     ctx.fill();
+    for (let i = 0; i < LIVES; i++) {
+      ctx.fillStyle = i < lives ? '#e8503a' : 'rgba(20, 22, 28, .4)';
+      ctx.beginPath();
+      ctx.arc(left + 8 + i * 22, y + 26, 7, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
   function draw(time) {
@@ -519,9 +691,12 @@
     drawHills(0.45, 390, 26, '#86c9a0');
     ctx.save();
     ctx.translate(-Math.round(cameraX), 0);
+    drawCaveBack();
     pits.forEach(drawPit);
     drawGround();
-    drawFlag(time);
+    drawCaveRock();
+    drawFlag(CHECKPOINT, checkpoint ? '#6cc44f' : '#e8503a', time);
+    drawFlag(FINISH, '#ffd966', time);
     drawBall();
     drawBits();
     ctx.restore();
@@ -537,7 +712,7 @@
     lastTime = now;
     spare += dt;
     while (spare >= STEP) {
-      if (mode !== 'lost') stepBall();
+      if (mode !== 'lost' && mode !== 'over') stepBall();
       spare -= STEP;
     }
     ball.squash = Math.max(0, ball.squash - dt * 7);
